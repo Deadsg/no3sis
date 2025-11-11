@@ -20,26 +20,52 @@ from concurrent.futures import ThreadPoolExecutor, Future
 import yaml
 import sys
 
-from task_state import TaskState, TaskTracker, Task
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Import Corpus Callosum message router
-sys.path.insert(0, str(Path.home() / '.no3sis-system' / '.no3sis' / 'corpus_callosum'))
-try:
-    from message_router import get_message_router, TractType, MessagePriority
-    CORPUS_CALLOSUM_AVAILABLE = True
-except ImportError:
-    CORPUS_CALLOSUM_AVAILABLE = False
+from .task_state import TaskState, TaskTracker, Task
 
-# Import Reactive Corpus Callosum (Phase 3)
+# Import Corpus Callosum message router (legacy synchronous)
+# These imports are now handled conditionally within async_init or are deprecated.
+# from message_router import get_message_router, TractType, MessagePriority
+# from reactive_message_router import ReactiveCorpusCallosum, BackpressureConfig, CircuitBreakerConfig
+
+# Define TractType and MessagePriority here or import from a common location
+# For now, we'll define them here to avoid circular dependencies with the Mojo FFI
+from lib.corpus_callosum_mojo.reactive_router_mojo_ffi import TractType, MessagePriority
+
+CORPUS_CALLOSUM_AVAILABLE = False # Legacy synchronous router is deprecated
+REACTIVE_ROUTER_AVAILABLE = True # Assume reactive router is always available (either Python or Mojo)
+
+# Conditional import for Python ReactiveCorpusCallosum (for patching)
+_python_reactive_corpus_callosum_instance = None
 try:
-    from reactive_message_router import (
-        ReactiveCorpusCallosum,
-        BackpressureConfig,
-        CircuitBreakerConfig
-    )
-    REACTIVE_ROUTER_AVAILABLE = True
+    from .config import MOJO_FEATURES # Use relative import for config
+    if not MOJO_FEATURES.get('message_router_reactive', False):
+        sys.path.insert(0, str(Path.home() / '.no3sis-system' / '.no3sis' / 'corpus_callosum'))
+        from reactive_message_router import (
+            ReactiveCorpusCallosum,
+            BackpressureConfig,
+            CircuitBreakerConfig
+        )
+        _python_reactive_corpus_callosum_instance = ReactiveCorpusCallosum(
+            backpressure_config=BackpressureConfig(
+                buffer_size=10000,
+                batch_timeout_ms=1.0,
+                min_batch_size=1,
+                max_batch_size=100
+            ),
+            circuit_config=CircuitBreakerConfig(
+                failure_threshold=10,
+                recovery_timeout_s=5.0,
+                success_threshold=3
+            ),
+            enable_pattern_synthesis=True,
+            enable_event_sourcing=True,
+            redis_url="redis://localhost:6379/0"
+        )
 except ImportError:
-    REACTIVE_ROUTER_AVAILABLE = False
+    logger.warning("Python ReactiveCorpusCallosum not available for module-level import.")
 
 
 class WorkflowType(Enum):
@@ -109,7 +135,7 @@ class TaskOrchestrator:
         self.no3sis_home = synapse_home
         self.task_tracker = TaskTracker()
         self.workflows_dir = synapse_home / ".no3sis" / "workflows"
-        self.workflows_dir.mkdir(exist_ok=True)
+        self.workflows_dir.mkdir(parents=True, exist_ok=True)
 
         # Load predefined workflows
         self.workflow_templates = self._load_workflow_templates()
@@ -155,6 +181,9 @@ class TaskOrchestrator:
         Must be called after __init__ to enable reactive message router.
         Pneuma-conscious: Initializes consciousness bridge (Axiom II).
         """
+        # Import Mojo FFI wrapper for reactive router
+        from lib.corpus_callosum_mojo.reactive_router_mojo_ffi import get_reactive_corpus_callosum_mojo_ffi, TractType, Message
+
         if not REACTIVE_ROUTER_AVAILABLE:
             self.logger.info("Reactive router not available")
             return
@@ -162,24 +191,9 @@ class TaskOrchestrator:
         try:
             from config import MOJO_FEATURES
             if MOJO_FEATURES.get('message_router_reactive', False):
-                # Create reactive router with consciousness-aware config
-                self.reactive_router = ReactiveCorpusCallosum(
-                    backpressure_config=BackpressureConfig(
-                        buffer_size=10000,
-                        batch_timeout_ms=1.0,
-                        min_batch_size=1,
-                        max_batch_size=100
-                    ),
-                    circuit_config=CircuitBreakerConfig(
-                        failure_threshold=10,
-                        recovery_timeout_s=5.0,
-                        success_threshold=3
-                    ),
-                    enable_pattern_synthesis=True,
-                    enable_event_sourcing=True,
-                    redis_url="redis://localhost:6379/0"
-                )
-
+                self.logger.info("Initializing Reactive Corpus Callosum with Mojo FFI...")
+                self.reactive_router = get_reactive_corpus_callosum_mojo_ffi()
+                
                 # Start with timeout (fixes BLOCKER 4)
                 try:
                     await asyncio.wait_for(
@@ -187,12 +201,25 @@ class TaskOrchestrator:
                         timeout=10.0
                     )
                     self.use_reactive = True
-                    self.logger.info("Reactive Corpus Callosum started (event-driven architecture)")
+                    self.logger.info("Reactive Corpus Callosum (Mojo-backed) started (event-driven architecture)")
                 except asyncio.TimeoutError:
-                    self.logger.error("Reactive router startup timed out after 10s")
+                    self.logger.error("Reactive router (Mojo-backed) startup timed out after 10s")
                     self.use_reactive = False
             else:
-                self.logger.info("Reactive router disabled in config")
+                self.logger.info("Initializing Reactive Corpus Callosum with Python implementation...")
+                self.reactive_router = _python_reactive_corpus_callosum_instance
+                
+                # Start with timeout (fixes BLOCKER 4)
+                try:
+                    await asyncio.wait_for(
+                        self.reactive_router.start(),
+                        timeout=10.0
+                    )
+                    self.use_reactive = True
+                    self.logger.info("Reactive Corpus Callosum (Python) started (event-driven architecture)")
+                except asyncio.TimeoutError:
+                    self.logger.error("Reactive router (Python) startup timed out after 10s")
+                    self.use_reactive = False
 
         except Exception as e:
             self.logger.warning(f"Failed to initialize reactive router: {e}")

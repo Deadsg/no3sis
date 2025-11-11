@@ -11,15 +11,36 @@ import logging
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Dict # Added Dict here
 from dataclasses import dataclass
 import time
 
-# Add corpus callosum to path
-sys.path.insert(0, str(Path.home() / '.no3sis-system' / '.no3sis' / 'corpus_callosum'))
-from reactive_message_router import TractType, Message
-
 logger = logging.getLogger(__name__)
+
+# Conditional import for TractType and Message based on Mojo feature flag
+try:
+    from ..config import MOJO_FEATURES # Changed to relative import
+    if MOJO_FEATURES.get('message_router_reactive', False):
+        from lib.corpus_callosum_mojo.reactive_router_mojo_ffi import TractType, Message
+    else:
+        # Fallback to Python implementation if Mojo not enabled
+        sys.path.insert(0, str(Path.home() / '.no3sis-system' / '.no3sis' / 'corpus_callosum'))
+        from reactive_message_router import TractType, Message
+except ImportError as e:
+    logger.error(f"Failed to import TractType or Message: {e}. Ensure reactive_message_router is available or Mojo feature is configured.")
+    # Define dummy classes to prevent further import errors if necessary
+    class TractType:
+        INTERNAL = "internal"
+        EXTERNAL = "external"
+    class Message:
+        id: int
+        source_tract: TractType
+        dest_tract: TractType
+        priority: Any
+        payload: Dict[str, Any]
+        payload_size: int
+        timestamp: float = 0.0
+
 
 
 @dataclass
@@ -165,7 +186,7 @@ class AgentConsumer(ABC):
             # Import ExecutionResult here to avoid circular import
             import sys
             sys.path.insert(0, str(Path.home() / '.no3sis-system' / 'lib'))
-            from orchestration import ExecutionResult
+            from orchestration_core import ExecutionResult # Changed to orchestration_core
 
             execution_result = ExecutionResult(
                 task_id=task.id,
@@ -193,7 +214,7 @@ class AgentConsumer(ABC):
             # Import ExecutionResult here
             import sys
             sys.path.insert(0, str(Path.home() / '.no3sis-system' / 'lib'))
-            from orchestration import ExecutionResult
+            from orchestration_core import ExecutionResult # Changed to orchestration_core
 
             execution_result = ExecutionResult(
                 task_id=task.id,
@@ -275,7 +296,7 @@ def create_agent_consumer(
         **config_kwargs
     )
 
-    # Import example agents
+    # Import example agents and custom agents
     try:
         import sys
         sys.path.insert(0, str(Path.home() / '.no3sis-system' / 'examples'))
@@ -285,10 +306,12 @@ def create_agent_consumer(
             CodeHoundAgent,
             DevOpsAgent
         )
+        # Import custom NeuralNodeAgent
+        from lib.particles.neural_node_agent import NeuralNodeAgent
     except ImportError as e:
         raise ValueError(
-            f"Example agents not available. "
-            f"See examples/example_agents.py for reference implementations. "
+            f"Agent implementations not available. "
+            f"Ensure example_agents.py and custom agents are accessible. "
             f"Error: {e}"
         )
 
@@ -297,6 +320,7 @@ def create_agent_consumer(
         "test-runner": TestRunnerAgent,
         "code-hound": CodeHoundAgent,
         "devops-engineer": DevOpsAgent,
+        "neural-node": NeuralNodeAgent, # Add NeuralNodeAgent
     }
 
     agent_class = agent_classes.get(agent_type)

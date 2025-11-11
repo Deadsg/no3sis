@@ -20,15 +20,50 @@ import time
 from abc import abstractmethod
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict # Added Dict here
 from enum import Enum
 
 from lib.core.agent_consumer import AgentConsumer, AgentConfig
+from ..config import MOJO_FEATURES # Added import for MOJO_FEATURES
 import sys
-sys.path.insert(0, str(Path.home() / '.no3sis-system' / '.no3sis' / 'corpus_callosum'))
-from reactive_message_router import TractType, Message, MessagePriority
 
 logger = logging.getLogger(__name__)
+
+# Conditional import for TractType, Message, and MessagePriority based on Mojo feature flag
+try:
+    if MOJO_FEATURES.get('message_router_reactive', False):
+        from lib.corpus_callosum_mojo.reactive_router_mojo_ffi import TractType, Message
+        # MessagePriority is not defined in reactive_router_mojo_ffi, so define a dummy one
+        class MessagePriority(Enum):
+            LOW = "low"
+            NORMAL = "normal"
+            HIGH = "high"
+            URGENT = "urgent"
+            CRITICAL = "critical"
+    else:
+        # Fallback to Python implementation if Mojo not enabled
+        sys.path.insert(0, str(Path.home() / '.no3sis-system' / '.no3sis' / 'corpus_callosum'))
+        from reactive_message_router import TractType, Message, MessagePriority
+except ImportError as e:
+    logger.error(f"Failed to import TractType, Message, or MessagePriority: {e}. Ensure reactive_message_router is available or Mojo feature is configured.")
+    # Define dummy classes to prevent further import errors if necessary
+    class TractType(Enum):
+        INTERNAL = "internal"
+        EXTERNAL = "external"
+    class Message:
+        id: int
+        source_tract: TractType
+        dest_tract: TractType
+        priority: Any
+        payload: Dict[str, Any]
+        payload_size: int
+        timestamp: float = 0.0
+    class MessagePriority(Enum):
+        LOW = "low"
+        NORMAL = "normal"
+        HIGH = "high"
+        URGENT = "urgent"
+        CRITICAL = "critical"
 
 
 class CircuitBreakerState(Enum):

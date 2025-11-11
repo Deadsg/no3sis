@@ -15,7 +15,7 @@ MOJO_FEATURES: Dict[str, bool] = {
 
     # Phase 3: Message Router (Corpus Callosum)
     'message_router': False,          # Phase 3: FFI-based (deprecated - 2x slower than Python)
-    'message_router_reactive': False, # Phase 3: Reactive architecture (100x better latency, ready for rollout)
+    'message_router_reactive': True, # Phase 3: Reactive architecture (100x better latency, ready for rollout)
 
     # Future: Vector Engine (Future)
     'vector_engine': False,      # Enable after future phase
